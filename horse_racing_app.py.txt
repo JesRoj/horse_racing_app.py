@@ -1,0 +1,181 @@
+import streamlit as st
+import pandas as pd
+import numpy as np
+import plotly.graph_objects as go
+from datetime import datetime
+
+st.set_page_config(
+    page_title="🐎 KimiK2 Horse Racing Predictor",
+    page_icon="🐎",
+    layout="wide"
+)
+
+class HorseRacingPredictor:
+    def __init__(self):
+        self.weights = {
+            'speed_figure': 0.25,
+            'recent_form': 0.20,
+            'class_level': 0.15,
+            'jockey_skill': 0.12,
+            'trainer_stats': 0.12,
+            'post_position': 0.08,
+            'track_condition': 0.05,
+            'distance_fitness': 0.03
+        }
+        
+        self.track_variants = {
+            'fast': 1.0, 'good': 1.02, 'sloppy': 1.05, 
+            'muddy': 1.08, 'turf_firm': 0.98, 'turf_good': 1.0
+        }
+        
+        self.post_position_weights = {
+            1: 0.85, 2: 0.90, 3: 0.92, 4: 0.95, 5: 0.97,
+            6: 1.0, 7: 0.98, 8: 0.95, 9: 0.92, 10: 0.90,
+            11: 0.85, 12: 0.80, 13: 0.75, 14: 0.70, 15: 0.65
+        }
+
+    def calculate_speed_score(self, horse_data):
+        base_speed = horse_data.get('beyer_speed_figure', 70)
+        track_adj = self.track_variants.get(horse_data.get('track_condition', 'fast'), 1.0)
+        distance = horse_data.get('race_distance', 6.0)
+        distance_factor = 1.0 if distance <= 6.5 else 0.95
+        
+        recent_speeds = horse_data.get('recent_beyer_figures', [base_speed])
+        trend_factor = 1.0
+        if len(recent_speeds) >= 3:
+            trend = (recent_speeds[-1] - recent_speeds[-3]) / recent_speeds[-3]
+            trend_factor = 1.0 + (trend * 0.5)
+        
+        return min(base_speed * track_adj * distance_factor * trend_factor, 120)
+
+    def calculate_form_score(self, horse_data):
+        recent_finishes = horse_data.get('recent_finishes', [5, 5, 5])
+        total_races = len(recent_finishes)
+        
+        if total_races == 0:
+            return 0.5
+            
+        weighted_sum = 0
+        total_weight = 0
+        
+        for i, finish in enumerate(reversed(recent_finishes)):
+            weight = (i + 1) / total_races
+            position_score = max(0, (10 - finish) / 10)
+            weighted_sum += position_score * weight
+            total_weight += weight
+            
+        return weighted_sum / total_weight if total_weight > 0 else 0.5
+
+    def calculate_overall_score(self, horse_data):
+        speed_score = self.calculate_speed_score(horse_data)
+        form_score = self.calculate_form_score(horse_data)
+        return speed_score * 0.6 + form_score * 40
+
+    def predict_race(self, horses_data):
+        results = []
+        
+        for horse in horses_data:
+            score = self.calculate_overall_score(horse)
+            results.append({
+                'Horse': horse.get('name', 'Unknown'),
+                'Score': round(score, 2),
+                'Win_Probability': round(score / 10, 1),
+                'Beyer_Figure': round(self.calculate_speed_score(horse), 1)
+            })
+        
+        results_df = pd.DataFrame(results).sort_values('Score', ascending=False)
+        
+        total_prob = results_df['Win_Probability'].sum()
+        if total_prob > 0:
+            results_df['Win_Probability'] = (results_df['Win_Probability'] / total_prob * 100).round(1)
+        
+        return results_df
+
+def main():
+    st.title("🏇 KimiK2 Horse Racing Predictor")
+    st.subheader("AI-Powered Race Analysis & Predictions")
+
+    if 'horses' not in st.session_state:
+        st.session_state.horses = []
+
+    col1, col2 = st.columns([2, 1])
+
+    with col1:
+        st.header("🐎 Add Horse")
+        
+        horse_name = st.text_input("Horse Name")
+        
+        col_h1, col_h2 = st.columns(2)
+        
+        with col_h1:
+            beyer_figure = st.number_input("Beyer Speed Figure", 50, 120, 85)
+            recent_finishes = st.text_input("Recent Finishes (e.g., 2,1,3)", "2,1,3")
+        
+        with col_h2:
+            post_position = st.number_input("Post Position", 1, 15, 1)
+            jockey_win_pct = st.number_input("Jockey Win %", 0.0, 50.0, 12.0) / 100
+
+        if st.button("🐎 Add Horse"):
+            try:
+                recent_finishes_list = [int(x.strip()) for x in recent_finishes.split(',')]
+                
+                horse_data = {
+                    'name': horse_name,
+                    'beyer_speed_figure': beyer_figure,
+                    'recent_finishes': recent_finishes_list,
+                    'post_position': post_position,
+                    'jockey_win_percentage': jockey_win_pct,
+                    'race_distance': 8.0,
+                    'track_condition': 'fast'
+                }
+                
+                st.session_state.horses.append(horse_data)
+                st.success(f"✅ Added {horse_name}!")
+                st.rerun()
+                
+            except Exception as e:
+                st.error(f"❌ Error: {str(e)}")
+
+    with col2:
+        st.header("📊 Race Info")
+        
+        if st.session_state.horses:
+            st.metric("Horses Entered", len(st.session_state.horses))
+            
+            for i, horse in enumerate(st.session_state.horses, 1):
+                st.write(f"{i}. {horse['name']}")
+        else:
+            st.info("Add horses above")
+
+    # Predictions
+    if len(st.session_state.horses) >= 2:
+        st.header("🔮 AI Predictions")
+        
+        predictor = HorseRacingPredictor()
+        predictions = predictor.predict_race(st.session_state.horses)
+        
+        st.subheader("🏆 Top 5 Predictions")
+        
+        col_pred1, col_pred2 = st.columns(2)
+        
+        with col_pred1:
+            st.dataframe(predictions.head(5))
+        
+        with col_pred2:
+            fig = go.Figure(data=[
+                go.Bar(x=predictions.head(5)['Horse'], 
+                      y=predictions.head(5)['Win_Probability'])
+            ])
+            fig.update_layout(title="Win Probabilities (%)")
+            st.plotly_chart(fig)
+
+        # Export
+        csv = predictions.to_csv(index=False)
+        st.download_button("📊 Download CSV", csv, "predictions.csv", "text/csv")
+        
+        if st.button("🗑️ Clear All"):
+            st.session_state.horses = []
+            st.rerun()
+
+if __name__ == "__main__":
+    main()
